@@ -6,7 +6,9 @@ import cors from "cors";
 
 const app = express();
 app.use(cors());
-const upload = multer({ dest: "uploads/" });
+
+// Railway sólo permite escritura en /tmp
+const upload = multer({ dest: "/tmp" });
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -14,47 +16,61 @@ const openai = new OpenAI({
 
 app.post("/ask", upload.single("audio"), async (req, res) => {
   try {
-    const audioPath = req.file.path;
+    if (!req.file) {
+      console.error("No audio file received");
+      return res.status(400).json({ error: "No audio uploaded" });
+    }
 
-    // 1. Speech to text
+    console.log("Audio received:", req.file.originalname, req.file.mimetype);
+
+    // 1️⃣ Speech → Text
     const transcript = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(audioPath),
-      model: "whisper-1",
+      file: fs.createReadStream(req.file.path),
+      model: "gpt-4o-transcribe"
     });
 
     const userText = transcript.text;
+    console.log("User said:", userText);
 
-    // 2. Mesero NPC
-    const completion = await openai.chat.completions.create({
+    // 2️⃣ NPC Mesero
+    const chat = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: [
-        { role: "system", content: "Eres un amable mesero de una cafetería. Respondes de forma breve y amigable." },
-        { role: "user", content: userText }
+        {
+          role: "system",
+          content: "Eres un amable mesero de una cafetería. Respondes de forma breve, natural y amigable."
+        },
+        {
+          role: "user",
+          content: userText
+        }
       ]
     });
 
-    const reply = completion.choices[0].message.content;
+    const reply = chat.choices[0].message.content;
+    console.log("NPC:", reply);
 
-    // 3. Text to speech
+    // 3️⃣ Text → Speech
     const tts = await openai.audio.speech.create({
       model: "gpt-4o-mini-tts",
       voice: "alloy",
-      input: reply,
+      input: reply
     });
 
     const buffer = Buffer.from(await tts.arrayBuffer());
 
-    res.set("Content-Type", "audio/wav");
+    // Enviar audio al Quest
+    res.setHeader("Content-Type", "audio/wav");
     res.send(buffer);
 
-    fs.unlinkSync(audioPath);
-  }
-  catch (err) {
-    console.error(err);
-    res.status(500).send("AI error");
+    fs.unlinkSync(req.file.path);
+
+  } catch (err) {
+    console.error("AI ERROR:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(3000, () => {
-  console.log("AI Server running");
+  console.log("☕ NPC AI Server running on port 3000");
 });
