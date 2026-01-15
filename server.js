@@ -3,11 +3,12 @@ import multer from "multer";
 import OpenAI from "openai";
 import fs from "fs";
 import cors from "cors";
+import { exec } from "child_process";
 
 const app = express();
 app.use(cors());
 
-// Railway sólo permite escritura en /tmp
+// Railway solo permite escritura en /tmp
 const upload = multer({ dest: "/tmp" });
 
 const openai = new OpenAI({
@@ -23,9 +24,28 @@ app.post("/ask", upload.single("audio"), async (req, res) => {
 
     console.log("Audio received:", req.file.originalname, req.file.mimetype);
 
+    const wavPath = req.file.path;
+    const mp3Path = wavPath + ".mp3";
+
+    // 🔥 Convertir WAV de Unity → MP3 compatible con OpenAI
+    await new Promise((resolve, reject) => {
+      exec(
+        `ffmpeg -y -i "${wavPath}" -ac 1 -ar 16000 -b:a 128k "${mp3Path}"`,
+        (error) => {
+          if (error) {
+            console.error("FFmpeg error:", error);
+            reject(error);
+          } else {
+            console.log("Audio converted to MP3");
+            resolve();
+          }
+        }
+      );
+    });
+
     // 1️⃣ Speech → Text
     const transcript = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(req.file.path),
+      file: fs.createReadStream(mp3Path),
       model: "gpt-4o-transcribe"
     });
 
@@ -59,11 +79,12 @@ app.post("/ask", upload.single("audio"), async (req, res) => {
 
     const buffer = Buffer.from(await tts.arrayBuffer());
 
-    // Enviar audio al Quest
     res.setHeader("Content-Type", "audio/wav");
     res.send(buffer);
 
-    fs.unlinkSync(req.file.path);
+    // 🧹 Limpiar archivos temporales
+    fs.unlinkSync(wavPath);
+    fs.unlinkSync(mp3Path);
 
   } catch (err) {
     console.error("AI ERROR:", err);
